@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.env
+
+# ChromaDB
+chroma_db/
+*.db
+*.sqlite
+
+# Streamlit
+.streamlit/secrets.toml
+.streamlit/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Images (optional - 이미지를 포함하려면 이 줄을 제거)
+# *.png
+# *.jpg
+# *.jpeg
