@@ -1,3 +1,5 @@
 streamlit
 chromadb
 openai
+numpy
+pandas
