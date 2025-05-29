@@ -3,6 +3,12 @@ import streamlit as st
 import json
 from openai import OpenAI
 import re
+import urllib.request
+import urllib.parse
+from bs4 import BeautifulSoup
+from datetime import datetime
+import time
+import os
 
 # 페이지 설정
 st.set_page_config(page_title="부동산 가격 분석 AI 에이전트", page_icon="🏠")
@@ -28,133 +34,210 @@ if api_key and api_key.startswith("sk-"):
     st.sidebar.success("✅ API 키가 설정되었습니다")
 else:
     st.sidebar.warning("⚠️ API 키를 설정해주세요")
-    with st.sidebar.expander("API 키 설정 방법"):
-        st.write("""
-        **Streamlit Cloud:**
-        1. App settings → Secrets 클릭
-        2. 다음 내용 추가:
-        ```
-        OPENAI_API_KEY = "sk-..."
-        ```
-        
-        **로컬 환경:**
-        1. `.streamlit/secrets.toml` 파일 생성
-        2. 위와 같은 내용 추가
-        """)
 
 # 페이지 제목
 st.title("🏠 부동산 가격 분석 AI 데이터 분석가")
-st.write("뉴스 기사 및 보고서에서 수집한 부동산 가격 데이터에 대해 질문해보세요.")
+st.write("중앙일보의 최신 부동산 뉴스를 실시간으로 분석합니다.")
 
-# 이미지 표시 (옵션)
-try:
-    st.image("realestate.png", use_container_width=True)
-except:
-    pass
+# 크롤링 함수들
+@st.cache_data(ttl=3600)  # 1시간 캐시
+def get_article_details_url(keyword, num_pages=2):
+    """중앙일보에서 키워드로 기사 URL 목록을 가져옵니다."""
+    encoded_keyword = urllib.parse.quote(keyword)
+    article_urls = []
 
-# 샘플 데이터 정의
-SAMPLE_DATA = [
-    {
-        "content": "서울 강남구 아파트 평균 매매가격이 전월 대비 2.3% 상승했습니다. 특히 대치동과 삼성동 일대의 대단지 아파트를 중심으로 가격 상승세가 뚜렷하게 나타났습니다. 전문가들은 이러한 상승세가 당분간 지속될 것으로 전망하고 있습니다.",
-        "title": "강남구 부동산 시장 동향",
-        "metadata": {"region": "강남구", "date": "2025-01", "price_trend": "상승", "article_type": "시장분석"}
-    },
-    {
-        "content": "송파구 잠실 일대 전세 가격이 안정세를 보이고 있습니다. 신규 아파트 공급과 함께 전세 수요가 분산되면서 가격 상승폭이 둔화되었습니다. 잠실 롯데월드타워 인근 아파트의 경우 전세가율이 60% 수준을 유지하고 있습니다.",
-        "title": "송파구 전세 시장 분석",
-        "metadata": {"region": "송파구", "date": "2025-01", "price_trend": "안정", "article_type": "시장분석"}
-    },
-    {
-        "content": "정부의 부동산 규제 완화 정책 발표 이후 서울 주요 지역의 거래량이 증가하고 있습니다. 특히 강남 3구를 중심으로 매수 문의가 늘어나고 있습니다. 대출 규제 완화와 양도세 부담 경감이 주요 요인으로 분석됩니다.",
-        "title": "부동산 정책 영향 분석",
-        "metadata": {"region": "서울", "date": "2025-01", "price_trend": "거래증가", "article_type": "정책분석"}
-    },
-    {
-        "content": "마포구 공덕동 일대 신축 오피스텔 분양가가 평당 3,000만원을 돌파했습니다. 교통 호재와 개발 기대감으로 투자 수요가 몰리고 있습니다. 공덕역 트리플역세권의 입지적 장점이 가격 상승을 견인하고 있습니다.",
-        "title": "마포구 오피스텔 시장",
-        "metadata": {"region": "마포구", "date": "2025-01", "price_trend": "상승", "article_type": "분양정보"}
-    },
-    {
-        "content": "경기도 성남시 분당구 주택 시장이 활기를 띠고 있습니다. GTX 개통 기대감과 함께 전세가율이 하락하면서 매매 전환 수요가 증가하고 있습니다. 판교 테크노밸리 인근 아파트를 중심으로 거래가 활발합니다.",
-        "title": "분당 부동산 시장 동향",
-        "metadata": {"region": "분당구", "date": "2025-01", "price_trend": "활성화", "article_type": "시장분석"}
-    }
-]
+    progress_bar = st.progress(0)
+    status_text = st.empty()
 
-# 간단한 검색 함수
-def search_data(query, data=SAMPLE_DATA):
-    """키워드 기반 검색"""
+    for page in range(1, num_pages + 1):
+        list_url = f"https://www.joongang.co.kr/search/news?keyword={encoded_keyword}&page={page}"
+        try:
+            status_text.text(f"페이지 {page}/{num_pages} 검색 중...")
+            request = urllib.request.Request(list_url)
+            request.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+            
+            response = urllib.request.urlopen(request).read().decode("utf-8")
+            soup = BeautifulSoup(response, "html.parser")
+
+            # 상세 기사 링크 추출
+            for headline in soup.select("div.card_body > h2.headline > a"):
+                article_url = headline.get("href")
+                if article_url:
+                    article_urls.append(article_url)
+
+            progress_bar.progress(page / num_pages)
+            time.sleep(0.5)  # 서버 부담 감소
+
+        except Exception as e:
+            st.warning(f"페이지 {page} 스크래핑 중 오류 발생: {e}")
+
+    progress_bar.empty()
+    status_text.empty()
+    return article_urls[:10]  # 최대 10개 기사만 반환
+
+def is_price_related_article(title, content):
+    """기사가 부동산 가격과 관련이 있는지 확인합니다."""
+    price_keywords = [
+        "가격", "시세", "매매", "전세", "월세", "상승", "하락", "거래", 
+        "급등", "급락", "매매가", "전셋값", "집값", "아파트값"
+    ]
+    
+    if any(keyword in title for keyword in price_keywords):
+        return True
+    
+    content_preview = content[:1000] if content else ""
+    if any(keyword in content_preview for keyword in price_keywords):
+        if re.search(r'\d+\s*억|\d+\s*천\s*만|\d+\s*만', content_preview):
+            return True
+    
+    return False
+
+@st.cache_data(ttl=3600)
+def extract_article_content(url):
+    """URL에서 기사의 상세 내용을 추출합니다."""
+    try:
+        request = urllib.request.Request(url)
+        request.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+        
+        response = urllib.request.urlopen(request).read().decode('utf-8')
+        soup = BeautifulSoup(response, 'html.parser')
+
+        # 기사 제목 추출
+        title_element = soup.select_one("h1.headline, h2.headline")
+        title = title_element.text.strip() if title_element else "제목 없음"
+
+        # 날짜 추출
+        date_element = soup.select_one("time")
+        date = date_element['datetime'][:10] if date_element and 'datetime' in date_element.attrs else datetime.now().strftime("%Y-%m-%d")
+
+        # 본문 추출
+        content_elements = soup.select('div.article_body p, article.article p')
+        content = "\n".join([p.text.strip() for p in content_elements])
+        
+        if not content:  # 다른 선택자 시도
+            content_elements = soup.select('div.article_body, div#article_body')
+            content = content_elements[0].text.strip() if content_elements else ""
+
+        # 부동산 가격과 관련된 기사인지 확인
+        if not is_price_related_article(title, content):
+            return None
+
+        # 지역 정보 추출
+        regions = ["강남", "강북", "서초", "송파", "마포", "용산", "강동", "노원", "분당", "일산", "서울", "경기"]
+        article_region = "기타"
+        for region in regions:
+            if region in title or region in content[:500]:
+                article_region = region
+                break
+
+        # 가격 동향 분석
+        price_trend = "기타"
+        if re.search(r'(상승|올랐|증가|오름세|급등)', content[:500]):
+            price_trend = "상승"
+        elif re.search(r'(하락|떨어졌|감소|내림세|급락)', content[:500]):
+            price_trend = "하락"
+        elif re.search(r'(유지|보합|변동없|안정)', content[:500]):
+            price_trend = "안정"
+
+        return {
+            "title": title,
+            "content": content[:2000],  # 처음 2000자만 저장
+            "url": url,
+            "date": date,
+            "region": article_region,
+            "price_trend": price_trend,
+            "source": "중앙일보"
+        }
+
+    except Exception as e:
+        st.warning(f"기사 추출 중 오류 발생: {e}")
+        return None
+
+# 데이터 수집 함수
+def collect_real_estate_news(keyword="부동산 가격", num_pages=2):
+    """실시간으로 중앙일보 부동산 뉴스를 수집합니다."""
+    with st.spinner(f"'{keyword}' 관련 최신 뉴스를 검색하고 있습니다..."):
+        # URL 수집
+        article_urls = get_article_details_url(keyword, num_pages)
+        
+        if not article_urls:
+            st.warning("검색 결과가 없습니다.")
+            return []
+        
+        # 기사 내용 추출
+        articles = []
+        progress_bar = st.progress(0)
+        
+        for i, url in enumerate(article_urls):
+            article_data = extract_article_content(url)
+            if article_data:
+                articles.append(article_data)
+            
+            progress_bar.progress((i + 1) / len(article_urls))
+            time.sleep(0.3)  # 서버 부담 감소
+        
+        progress_bar.empty()
+        
+        return articles
+
+# 검색 함수
+def search_articles(query, articles):
+    """수집된 기사에서 관련 기사를 검색합니다."""
+    if not articles:
+        return []
+    
     query_lower = query.lower()
     results = []
     
-    # 각 문서에 대해 점수 계산
-    for item in data:
+    for article in articles:
         score = 0
-        content_lower = item["content"].lower()
-        title_lower = item["title"].lower()
+        title_lower = article["title"].lower()
+        content_lower = article["content"].lower()
         
-        # 쿼리를 단어로 분리
+        # 쿼리 키워드 매칭
         keywords = query_lower.split()
-        
         for keyword in keywords:
-            # 제목에 포함되면 높은 점수
             if keyword in title_lower:
-                score += 3
-            # 내용에 포함되면 중간 점수
+                score += 5
             if keyword in content_lower:
                 score += 2
-            # 메타데이터에 포함되면 낮은 점수
-            metadata_str = str(item["metadata"]).lower()
-            if keyword in metadata_str:
-                score += 1
-            
-            # 지역명 특별 처리
-            if "region" in item["metadata"] and keyword in item["metadata"]["region"].lower():
-                score += 5
+            if keyword in article["region"].lower():
+                score += 3
         
         if score > 0:
-            results.append((score, item))
+            results.append((score, article))
     
     # 점수 순으로 정렬
     results.sort(key=lambda x: x[0], reverse=True)
-    
-    # 상위 3개만 반환
-    return [r[1] for r in results[:3]] if results else SAMPLE_DATA[:3]
+    return [r[1] for r in results[:5]]  # 상위 5개만 반환
 
-# OpenAI를 활용한 응답 생성
-def get_gpt_response(query, search_results, api_key):
+# OpenAI 응답 생성
+def get_gpt_response(query, search_results):
     if not api_key:
         return "OpenAI API 키가 설정되지 않았습니다."
+    
+    if not search_results:
+        return "관련 기사를 찾을 수 없습니다."
 
     try:
         client = OpenAI(api_key=api_key.strip())
         
         # 컨텍스트 구성
-        context = "다음은 부동산 가격 관련 데이터입니다:\n\n"
+        context = "다음은 중앙일보의 최신 부동산 뉴스입니다:\n\n"
         
-        for i, result in enumerate(search_results):
-            context += f"[문서 {i+1}]\n"
-            context += f"제목: {result.get('title', '제목 없음')}\n"
-            
-            if result.get('metadata'):
-                metadata = result['metadata']
-                context += f"지역: {metadata.get('region', 'N/A')}\n"
-                context += f"날짜: {metadata.get('date', 'N/A')}\n"
-                context += f"가격동향: {metadata.get('price_trend', 'N/A')}\n"
-                context += f"유형: {metadata.get('article_type', 'N/A')}\n"
-            
-            context += f"내용: {result['content']}\n\n"
+        for i, article in enumerate(search_results):
+            context += f"[기사 {i+1}]\n"
+            context += f"제목: {article['title']}\n"
+            context += f"날짜: {article['date']}\n"
+            context += f"지역: {article['region']}\n"
+            context += f"가격동향: {article['price_trend']}\n"
+            context += f"내용: {article['content'][:500]}...\n"
+            context += f"출처: {article['url']}\n\n"
         
-        # 시스템 프롬프트
-        system_prompt = """당신은 부동산 시장 및 가격 분석 전문가입니다. 
-        제공된 문서들을 바탕으로 사용자 질문에 정확하고 구체적으로 답변해주세요.
-        숫자나 통계가 있다면 반드시 포함시키고, 지역별 특성을 고려하여 설명하세요."""
-        
-        # API 호출
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": "당신은 부동산 전문가입니다. 최신 뉴스를 바탕으로 정확하고 구체적으로 답변하세요."},
                 {"role": "user", "content": f"{context}\n질문: {query}"}
             ],
             temperature=0.7,
@@ -164,132 +247,113 @@ def get_gpt_response(query, search_results, api_key):
         return response.choices[0].message.content
         
     except Exception as e:
-        error_msg = str(e)
-        if "api key" in error_msg.lower():
-            return "OpenAI API 키 인증에 실패했습니다. API 키를 확인해주세요."
-        else:
-            return f"응답 생성 중 오류가 발생했습니다: {error_msg}"
-
-# 간단한 응답 생성
-def get_simple_response(query, search_results):
-    if not search_results:
-        return "관련 데이터를 찾을 수 없습니다."
-    
-    result_text = f"💡 '{query}'에 대한 검색 결과입니다:\n\n"
-    
-    for i, result in enumerate(search_results):
-        result_text += f"### {i+1}. {result.get('title', f'문서 {i+1}')}\n"
-        
-        # 메타데이터 표시
-        if result.get('metadata'):
-            meta = result['metadata']
-            result_text += f"📍 지역: {meta.get('region', 'N/A')} | "
-            result_text += f"📅 시기: {meta.get('date', 'N/A')} | "
-            result_text += f"📊 동향: {meta.get('price_trend', 'N/A')}\n\n"
-        
-        # 내용 요약
-        content = result['content']
-        if len(content) > 200:
-            content = content[:200] + "..."
-        result_text += f"{content}\n\n"
-        result_text += "---\n\n"
-    
-    result_text += "\n💡 더 자세한 분석을 원하시면 OpenAI API 키를 설정해주세요."
-    return result_text
-
-# 챗봇 응답 생성
-def chat_response(question):
-    # 데이터 검색
-    search_results = search_data(question)
-    
-    # API 키가 있으면 GPT 사용, 없으면 간단한 응답
-    if api_key and api_key.startswith("sk-"):
-        return get_gpt_response(question, search_results, api_key)
-    else:
-        return get_simple_response(question, search_results)
+        return f"응답 생성 중 오류: {str(e)}"
 
 # 세션 상태 초기화
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "articles" not in st.session_state:
+    st.session_state.articles = []
+if "last_crawl" not in st.session_state:
+    st.session_state.last_crawl = None
 
-# 이전 대화 내용 표시
-for message in st.session_state.chat_history:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+# 사이드바 - 데이터 수집
+st.sidebar.header("📰 뉴스 수집")
 
-# 사용자 입력 받기
-if prompt := st.chat_input("질문을 입력하세요 (예: 서울 강남 아파트 가격 동향은 어떻게 되나요?)"):
-    # 사용자 메시지 표시
+# 검색 키워드 설정
+search_keywords = st.sidebar.text_input(
+    "검색 키워드", 
+    value="부동산 가격",
+    help="중앙일보에서 검색할 키워드를 입력하세요"
+)
+
+# 페이지 수 설정
+num_pages = st.sidebar.slider("검색 페이지 수", 1, 5, 2)
+
+# 데이터 수집 버튼
+if st.sidebar.button("🔄 최신 뉴스 수집", type="primary"):
+    articles = collect_real_estate_news(search_keywords, num_pages)
+    if articles:
+        st.session_state.articles = articles
+        st.session_state.last_crawl = datetime.now()
+        st.success(f"✅ {len(articles)}개의 기사를 수집했습니다!")
+    else:
+        st.warning("수집된 기사가 없습니다.")
+
+# 수집된 데이터 정보
+if st.session_state.articles:
+    st.sidebar.success(f"📊 수집된 기사: {len(st.session_state.articles)}개")
+    if st.session_state.last_crawl:
+        st.sidebar.info(f"마지막 수집: {st.session_state.last_crawl.strftime('%Y-%m-%d %H:%M')}")
+else:
+    st.sidebar.info("아직 뉴스를 수집하지 않았습니다.\n'최신 뉴스 수집' 버튼을 클릭하세요.")
+
+# 수집된 기사 미리보기
+if st.sidebar.checkbox("수집된 기사 보기") and st.session_state.articles:
+    with st.sidebar.expander("최근 기사 목록"):
+        for article in st.session_state.articles[:5]:
+            st.write(f"**{article['title'][:30]}...**")
+            st.write(f"📅 {article['date']} | 📍 {article['region']} | 📈 {article['price_trend']}")
+            st.write("---")
+
+# 대화 표시
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.write(msg["content"])
+
+# 사용자 입력
+if prompt := st.chat_input("질문을 입력하세요 (예: 강남 아파트 가격은 어떻게 되고 있나요?)"):
+    # 사용자 메시지 추가
+    st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
-        st.markdown(prompt)
-    
-    # 대화 이력에 저장
-    st.session_state.chat_history.append({"role": "user", "content": prompt})
+        st.write(prompt)
     
     # 응답 생성
-    with st.spinner("답변을 준비하고 있습니다..."):
-        response = chat_response(prompt)
-    
-    # 응답 표시
     with st.chat_message("assistant"):
-        st.markdown(response)
+        if not st.session_state.articles:
+            response = "먼저 사이드바에서 '최신 뉴스 수집' 버튼을 클릭하여 최신 뉴스를 수집해주세요."
+            st.write(response)
+        else:
+            with st.spinner("답변 생성 중..."):
+                # 관련 기사 검색
+                relevant_articles = search_articles(prompt, st.session_state.articles)
+                
+                if api_key:
+                    response = get_gpt_response(prompt, relevant_articles)
+                else:
+                    # API 키 없이 간단한 응답
+                    response = f"관련 기사 {len(relevant_articles)}개를 찾았습니다:\n\n"
+                    for i, article in enumerate(relevant_articles[:3]):
+                        response += f"**{i+1}. {article['title']}**\n"
+                        response += f"- 날짜: {article['date']}\n"
+                        response += f"- 지역: {article['region']}\n"
+                        response += f"- 동향: {article['price_trend']}\n"
+                        response += f"- 내용: {article['content'][:200]}...\n\n"
+                
+                st.write(response)
+                
+                # 출처 표시
+                if relevant_articles:
+                    with st.expander("📎 참고 기사"):
+                        for article in relevant_articles[:3]:
+                            st.write(f"- [{article['title']}]({article['url']})")
     
-    # 대화 이력에 저장
-    st.session_state.chat_history.append({"role": "assistant", "content": response})
+    st.session_state.messages.append({"role": "assistant", "content": response})
 
-# 사이드바 예시 질문
-st.sidebar.header("예시 질문")
-example_questions = [
-    "서울 강남 아파트 가격 동향은 어떻게 되나요?",
-    "최근 전세 시장의 변화 추이를 알려주세요.",
-    "어떤 정책이 부동산 가격에 영향을 미쳤나요?",
-    "송파구와 강남구의 아파트 가격을 비교해주세요.",
-    "마포구 오피스텔 투자 전망은?",
-    "분당 부동산 시장은 어떤가요?"
+# 예시 질문
+st.sidebar.header("💡 예시 질문")
+examples = [
+    "강남 아파트 가격 동향은?",
+    "최근 전세 시장은 어떤가요?",
+    "서울 부동산 가격이 오르고 있나요?",
+    "송파구 아파트 시세는?"
 ]
 
-# 예시 질문 버튼
-for i, question in enumerate(example_questions):
-    if st.sidebar.button(question, key=f"ex_{i}"):
-        # 대화에 추가
-        st.session_state.chat_history.append({"role": "user", "content": question})
-        response = chat_response(question)
-        st.session_state.chat_history.append({"role": "assistant", "content": response})
+for example in examples:
+    if st.sidebar.button(example, key=f"ex_{example}"):
         st.rerun()
 
-# 데이터 시각화
-st.sidebar.header("데이터 시각화")
-if st.sidebar.button("가격 동향 차트 보기"):
-    st.session_state.show_chart = True
-
-if "show_chart" in st.session_state and st.session_state.show_chart:
-    st.subheader("📊 주요 지역 부동산 가격 동향")
-    
-    # 샘플 차트 데이터
-    chart_data = {
-        "강남": [100, 105, 110, 108, 115, 120],
-        "송파": [90, 95, 100, 103, 107, 110],
-        "마포": [80, 82, 85, 87, 90, 92],
-        "분당": [85, 87, 90, 92, 95, 98]
-    }
-    
-    st.line_chart(chart_data)
-    st.caption("최근 6개월 부동산 가격 지수 (기준점: 100)")
-    
-    # 차트 닫기 버튼
-    if st.button("차트 닫기"):
-        st.session_state.show_chart = False
-        st.rerun()
-
-# 대화 기록 초기화
-if st.sidebar.button("대화 기록 초기화"):
-    st.session_state.chat_history = []
+# 대화 초기화
+if st.sidebar.button("🗑️ 대화 초기화"):
+    st.session_state.messages = []
     st.rerun()
-
-# 하단 정보
-st.sidebar.markdown("---")
-st.sidebar.info("""
-**데이터 소스**: 샘플 데이터 (데모용)
-**검색 방식**: 키워드 매칭
-**AI 모델**: GPT-4o-mini (API 키 필요)
-""")
