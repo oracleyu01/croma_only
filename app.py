@@ -5,33 +5,58 @@ from openai import OpenAI
 import re
 import urllib.request
 import urllib.parse
-from bs4 import BeautifulSoup
 from datetime import datetime
 import time
 
 # 페이지 설정
 st.set_page_config(page_title="AI 뉴스 분석 에이전트", page_icon="📰")
 
-# OpenAI API 키 가져오기
-def get_api_key():
+# API 키 가져오기
+def get_api_keys():
+    """Streamlit secrets에서 API 키들을 가져옵니다."""
+    openai_key = None
+    naver_client_id = None
+    naver_client_secret = None
+    
     try:
-        return st.secrets["OPENAI_API_KEY"]
+        openai_key = st.secrets["OPENAI_API_KEY"]
     except:
-        return st.sidebar.text_input("OpenAI API 키를 입력하세요", type="password")
+        openai_key = st.sidebar.text_input("OpenAI API 키", type="password")
+    
+    try:
+        naver_client_id = st.secrets["NAVER_CLIENT_ID"]
+        naver_client_secret = st.secrets["NAVER_CLIENT_SECRET"]
+    except:
+        with st.sidebar.expander("네이버 API 설정"):
+            naver_client_id = st.text_input("네이버 Client ID")
+            naver_client_secret = st.text_input("네이버 Client Secret", type="password")
+    
+    return openai_key, naver_client_id, naver_client_secret
+
+# API 키 가져오기
+openai_key, naver_client_id, naver_client_secret = get_api_keys()
 
 # 사이드바 설정
 st.sidebar.title("⚙️ 설정")
-api_key = get_api_key()
 
-if api_key and api_key.startswith("sk-"):
-    st.sidebar.success("✅ API 키가 설정되었습니다")
+# API 키 상태 표시
+api_status = []
+if openai_key and openai_key.startswith("sk-"):
+    api_status.append("✅ OpenAI")
 else:
-    st.sidebar.warning("⚠️ API 키를 설정해주세요")
+    api_status.append("❌ OpenAI")
+
+if naver_client_id and naver_client_secret:
+    api_status.append("✅ 네이버")
+else:
+    api_status.append("❌ 네이버")
+
+st.sidebar.info("API 상태: " + " | ".join(api_status))
 
 st.title("📰 AI 뉴스 분석 에이전트")
-st.write("중앙일보의 최신 뉴스를 실시간으로 검색하고 분석합니다.")
+st.write("네이버 뉴스를 실시간으로 검색하고 분석합니다.")
 
-# 최신 이슈 키워드 (주기적으로 업데이트 필요)
+# 최신 이슈 키워드
 TRENDING_TOPICS = {
     "경제": ["금리", "환율", "주식", "부동산", "물가", "실업률"],
     "정치": ["국회", "대통령", "선거", "정당", "외교", "정책"],
@@ -41,74 +66,70 @@ TRENDING_TOPICS = {
     "국제": ["미국", "중국", "일본", "러시아", "유럽", "중동"]
 }
 
-# 크롤링 함수
+# 네이버 뉴스 검색 함수
 @st.cache_data(ttl=1800)  # 30분 캐시
-def crawl_joongang_news(keyword="최신 뉴스", max_articles=10):
-    """중앙일보에서 키워드로 뉴스를 검색합니다."""
+def search_naver_news(query, display=20, start=1, sort="date"):
+    """네이버 뉴스 검색 API를 사용하여 뉴스를 검색합니다."""
+    if not naver_client_id or not naver_client_secret:
+        st.error("네이버 API 키가 설정되지 않았습니다!")
+        return []
+    
     try:
-        encoded_keyword = urllib.parse.quote(keyword)
-        url = f"https://www.joongang.co.kr/search/news?keyword={encoded_keyword}"
+        # API URL 설정
+        encText = urllib.parse.quote(query)
+        url = f"https://openapi.naver.com/v1/search/news.json?query={encText}&display={display}&start={start}&sort={sort}"
         
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
+        # 요청 헤더 설정
+        request = urllib.request.Request(url)
+        request.add_header("X-Naver-Client-Id", naver_client_id)
+        request.add_header("X-Naver-Client-Secret", naver_client_secret)
         
-        request = urllib.request.Request(url, headers=headers)
-        response = urllib.request.urlopen(request, timeout=10)
-        html = response.read().decode('utf-8')
+        # API 호출
+        response = urllib.request.urlopen(request)
+        rescode = response.getcode()
         
-        soup = BeautifulSoup(html, 'html.parser')
-        articles = []
-        
-        # 기사 카드 찾기
-        article_cards = soup.select('div.card_body')[:max_articles]
-        
-        for card in article_cards:
-            try:
-                # 제목과 링크
-                title_elem = card.select_one('h2.headline a')
-                if not title_elem:
-                    continue
-                    
-                title = title_elem.text.strip()
-                link = title_elem.get('href', '#')
+        if rescode == 200:
+            response_body = response.read()
+            result = json.loads(response_body.decode('utf-8'))
+            
+            articles = []
+            for item in result.get('items', []):
+                # HTML 태그 제거
+                title = re.sub('<[^<]+?>', '', item['title'])
+                description = re.sub('<[^<]+?>', '', item['description'])
                 
-                # 날짜
-                date_elem = card.select_one('p.date')
-                date = date_elem.text.strip() if date_elem else datetime.now().strftime("%Y-%m-%d")
-                
-                # 요약
-                summary_elem = card.select_one('p.description')
-                summary = summary_elem.text.strip() if summary_elem else title
+                # 날짜 형식 변환
+                pub_date = datetime.strptime(item['pubDate'], '%a, %d %b %Y %H:%M:%S +0900')
                 
                 # 카테고리 추출
                 category = "일반"
                 for cat, keywords in TRENDING_TOPICS.items():
-                    if any(kw in title or kw in summary for kw in keywords):
+                    if any(kw in title or kw in description for kw in keywords):
                         category = cat
                         break
                 
                 articles.append({
                     "title": title,
-                    "content": summary,
-                    "date": date[:10] if len(date) > 10 else date,
+                    "content": description,
+                    "date": pub_date.strftime("%Y-%m-%d"),
+                    "time": pub_date.strftime("%H:%M"),
                     "category": category,
-                    "url": link,
-                    "source": "중앙일보"
+                    "url": item['link'],
+                    "source": item.get('originallink', item['link'])
                 })
-                
-            except Exception as e:
-                continue
-        
-        return articles
-        
+            
+            return articles
+        else:
+            st.error(f"네이버 API 오류: {rescode}")
+            return []
+            
     except Exception as e:
-        st.error(f"크롤링 중 오류 발생: {e}")
+        st.error(f"뉴스 검색 중 오류 발생: {e}")
         return []
 
-# 검색 함수
-def search_articles(query, articles):
-    """기사에서 관련 내용을 검색합니다."""
+# 기사 필터링 및 검색
+def filter_articles(query, articles):
+    """사용자 쿼리에 맞는 기사를 필터링합니다."""
     if not articles:
         return []
     
@@ -135,19 +156,20 @@ def search_articles(query, articles):
 
 # GPT 응답 생성
 def get_gpt_response(query, articles):
-    if not api_key:
+    if not openai_key:
         return simple_response(query, articles)
     
     try:
-        client = OpenAI(api_key=api_key.strip())
+        client = OpenAI(api_key=openai_key.strip())
         
         context = "관련 뉴스 기사:\n\n"
         for i, article in enumerate(articles[:5]):
             context += f"[기사 {i+1}]\n"
             context += f"제목: {article['title']}\n"
-            context += f"날짜: {article['date']}\n"
+            context += f"날짜: {article['date']} {article.get('time', '')}\n"
             context += f"카테고리: {article.get('category', '일반')}\n"
-            context += f"내용: {article['content']}\n\n"
+            context += f"내용: {article['content']}\n"
+            context += f"출처: {article['source']}\n\n"
         
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -172,8 +194,9 @@ def simple_response(query, articles):
     response = f"📰 '{query}'에 대한 검색 결과:\n\n"
     for i, article in enumerate(articles[:3]):
         response += f"**{i+1}. {article['title']}**\n"
-        response += f"- 📅 {article['date']} | 🏷️ {article.get('category', '일반')}\n"
-        response += f"- {article['content'][:150]}...\n\n"
+        response += f"- 📅 {article['date']} {article.get('time', '')} | 🏷️ {article.get('category', '일반')}\n"
+        response += f"- {article['content'][:200]}...\n"
+        response += f"- 🔗 [기사 보기]({article['url']})\n\n"
     
     return response
 
@@ -195,30 +218,32 @@ search_keyword = st.sidebar.text_input(
     help="검색하고 싶은 뉴스 주제를 입력하세요"
 )
 
-# 기사 수 설정
-num_articles = st.sidebar.slider("수집할 기사 수", 5, 20, 10)
-
-# 뉴스 수집 버튼
+# 검색 옵션
 col1, col2 = st.sidebar.columns(2)
 with col1:
-    if st.button("📰 뉴스 수집", type="primary", use_container_width=True):
-        if search_keyword:
-            with st.spinner(f"'{search_keyword}' 관련 뉴스를 검색 중..."):
-                articles = crawl_joongang_news(search_keyword, num_articles)
-                if articles:
-                    st.session_state.articles = articles
-                    st.session_state.search_keyword = search_keyword
-                    st.success(f"✅ {len(articles)}개 기사 수집 완료!")
-                else:
-                    st.warning("검색 결과가 없습니다.")
-        else:
-            st.error("검색 키워드를 입력해주세요!")
-
+    num_articles = st.selectbox("기사 수", [10, 20, 30, 50], index=1)
 with col2:
-    if st.button("🗑️ 초기화", use_container_width=True):
-        st.session_state.messages = []
-        st.session_state.articles = []
-        st.rerun()
+    sort_option = st.selectbox("정렬", ["date", "sim"], format_func=lambda x: "최신순" if x == "date" else "정확도순")
+
+# 뉴스 수집 버튼
+if st.sidebar.button("📰 뉴스 수집", type="primary", use_container_width=True):
+    if search_keyword:
+        with st.spinner(f"'{search_keyword}' 관련 뉴스를 검색 중..."):
+            articles = search_naver_news(search_keyword, display=num_articles, sort=sort_option)
+            if articles:
+                st.session_state.articles = articles
+                st.session_state.search_keyword = search_keyword
+                st.success(f"✅ {len(articles)}개 기사 수집 완료!")
+            else:
+                st.warning("검색 결과가 없습니다.")
+    else:
+        st.error("검색 키워드를 입력해주세요!")
+
+# 초기화 버튼
+if st.sidebar.button("🗑️ 초기화", use_container_width=True):
+    st.session_state.messages = []
+    st.session_state.articles = []
+    st.rerun()
 
 # 수집된 기사 정보
 if st.session_state.articles:
@@ -237,13 +262,10 @@ tabs = st.sidebar.tabs(list(TRENDING_TOPICS.keys()))
 
 for i, (category, keywords) in enumerate(TRENDING_TOPICS.items()):
     with tabs[i]:
-        st.write(f"**{category} 관련 키워드:**")
-        # 키워드 버튼들
         for keyword in keywords:
             if st.button(keyword, key=f"trend_{category}_{keyword}", use_container_width=True):
-                # 검색 키워드 설정 후 뉴스 수집
                 with st.spinner(f"'{keyword}' 관련 뉴스 검색 중..."):
-                    articles = crawl_joongang_news(keyword, 10)
+                    articles = search_naver_news(keyword, display=20)
                     if articles:
                         st.session_state.articles = articles
                         st.session_state.search_keyword = keyword
@@ -251,17 +273,27 @@ for i, (category, keywords) in enumerate(TRENDING_TOPICS.items()):
 
 # 메인 채팅 인터페이스
 if not st.session_state.articles:
-    # 환영 메시지
     st.info("""
     🎯 **사용 방법:**
     1. 사이드바에서 검색 키워드를 입력하거나
     2. 최신 이슈에서 관심 있는 키워드를 클릭하여
     3. 뉴스를 수집한 후 질문해보세요!
     
-    💡 **검색 가능한 주제:** 정치, 경제, 사회, IT, 문화, 스포츠 등 모든 분야
+    💡 **네이버 뉴스 검색의 장점:**
+    - 다양한 언론사의 뉴스를 한 번에 검색
+    - 실시간 최신 뉴스 제공
+    - 정확도순/최신순 정렬 옵션
     """)
 else:
-    st.success(f"📰 '{st.session_state.search_keyword}' 관련 {len(st.session_state.articles)}개 기사를 분석할 준비가 되었습니다!")
+    # 수집된 기사 요약 정보
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("검색어", st.session_state.search_keyword)
+    with col2:
+        st.metric("수집 기사", f"{len(st.session_state.articles)}개")
+    with col3:
+        latest_date = max(art['date'] for art in st.session_state.articles)
+        st.metric("최신 기사", latest_date)
 
 # 대화 표시
 for msg in st.session_state.messages:
@@ -270,44 +302,39 @@ for msg in st.session_state.messages:
 
 # 사용자 입력
 if prompt := st.chat_input("수집된 뉴스에 대해 질문하세요"):
-    # 사용자 메시지
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.write(prompt)
     
-    # 응답 생성
     with st.chat_message("assistant"):
         if not st.session_state.articles:
             response = "먼저 뉴스를 수집해주세요! 검색 키워드를 입력하거나 최신 이슈에서 키워드를 선택하세요."
-            st.write(response)
         else:
             with st.spinner("분석 중..."):
-                relevant = search_articles(prompt, st.session_state.articles)
+                relevant = filter_articles(prompt, st.session_state.articles)
                 
                 if relevant:
                     response = get_gpt_response(prompt, relevant)
                 else:
-                    response = f"'{prompt}'와 관련된 기사를 찾을 수 없습니다. '{st.session_state.search_keyword}' 관련 다른 질문을 해보세요."
-                
-                st.write(response)
-                
-                # 관련 기사 링크
-                if relevant:
-                    with st.expander("📎 참고 기사"):
-                        for art in relevant[:3]:
-                            if art['url'] != '#':
-                                st.write(f"- [{art['title']}]({art['url']})")
-                            else:
-                                st.write(f"- {art['title']}")
-                            st.caption(f"  {art['date']} | {art.get('category', '일반')}")
+                    response = f"'{prompt}'와 관련된 기사를 찾을 수 없습니다. 현재 '{st.session_state.search_keyword}' 관련 기사를 보유하고 있습니다."
+        
+        st.write(response)
+        
+        # 관련 기사 링크
+        if st.session_state.articles and relevant:
+            with st.expander("📎 참고 기사"):
+                for art in relevant[:3]:
+                    st.write(f"**[{art['title']}]({art['url']})**")
+                    st.caption(f"{art['date']} {art.get('time', '')} | {art.get('category', '일반')}")
     
     st.session_state.messages.append({"role": "assistant", "content": response})
 
 # 하단 정보
 st.sidebar.markdown("---")
 st.sidebar.info("""
-**💡 팁:**
-- 구체적인 키워드로 검색하면 더 정확한 결과를 얻을 수 있습니다
-- 여러 키워드를 조합해보세요 (예: "AI 규제", "경제 전망")
-- 수집된 뉴스를 바탕으로 심층 분석을 요청할 수 있습니다
+**💡 검색 팁:**
+- 띄어쓰기로 여러 키워드 조합 가능
+- 따옴표("")로 정확한 구문 검색
+- 최신순: 최근 뉴스 우선
+- 정확도순: 검색어와 관련도 높은 순
 """)
