@@ -127,34 +127,59 @@ def search_naver_news(query, display=20, start=1, sort="date"):
         st.error(f"뉴스 검색 중 오류 발생: {e}")
         return []
 
-# 기사 필터링 및 검색
+# 기사 필터링 및 검색 (개선된 버전)
 def filter_articles(query, articles):
-    """사용자 쿼리에 맞는 기사를 필터링합니다."""
+    """사용자 쿼리에 맞는 기사를 더 정확하게 필터링합니다."""
     if not articles:
         return []
     
+    # 쿼리 분석
     query_lower = query.lower()
+    
+    # 전문 용어 매핑 (사용자가 쓸 수 있는 표현들)
+    term_mapping = {
+        "녹지": ["거부", "거절", "부정적", "어려움", "까다로운", "제한"],
+        "전세대출": ["전세자금대출", "전세대출", "전세 대출", "전세자금"],
+        "은행": ["은행", "금융기관", "시중은행", "금융권"]
+    }
+    
     results = []
     
     for article in articles:
         score = 0
+        title_content = (article["title"] + " " + article["content"]).lower()
         
-        # 키워드 매칭
+        # 직접 키워드 매칭
         for keyword in query_lower.split():
-            if keyword in article["title"].lower():
-                score += 5
-            if keyword in article["content"].lower():
+            if keyword in title_content:
                 score += 3
-            if keyword in article.get("category", "").lower():
-                score += 2
+        
+        # 전문 용어 매핑을 통한 매칭
+        for user_term, related_terms in term_mapping.items():
+            if user_term in query_lower:
+                for related in related_terms:
+                    if related in title_content:
+                        score += 2
+        
+        # 특별히 전세대출 관련 기사에 가중치
+        if "전세" in title_content and "대출" in title_content:
+            score += 5
         
         if score > 0:
             results.append((score, article))
     
     results.sort(key=lambda x: x[0], reverse=True)
-    return [r[1] for r in results[:5]]
+    filtered = [r[1] for r in results[:5]]
+    
+    # 디버깅 정보 출력
+    if filtered:
+        st.write(f"🔍 관련 기사 {len(filtered)}개 발견")
+    else:
+        st.write("⚠️ 직접적으로 관련된 기사를 찾지 못했습니다. 전체 기사를 바탕으로 답변합니다.")
+    
+    return filtered if filtered else articles[:5]
 
-# GPT 응답 생성
+# GPT 응답 생성 (개선된 버전)
 def get_gpt_response(query, articles):
     if not openai_key:
         return simple_response(query, articles)
@@ -167,15 +192,23 @@ def get_gpt_response(query, articles):
             context += f"[기사 {i+1}]\n"
             context += f"제목: {article['title']}\n"
             context += f"날짜: {article['date']} {article.get('time', '')}\n"
-            context += f"카테고리: {article.get('category', '일반')}\n"
             context += f"내용: {article['content']}\n"
             context += f"출처: {article['source']}\n\n"
+        
+        # 개선된 시스템 프롬프트
+        system_prompt = """당신은 뉴스 분석 전문가입니다. 사용자의 질문에 대해:
+1. 제공된 뉴스 기사에서 직접적으로 관련된 내용을 찾아 답변하세요.
+2. 만약 직접적인 답변이 없다면, 관련된 정보를 종합해서 추론하세요.
+3. "녹지" = 부정적/거부, "전세대출" = 전세자금대출 등 금융 용어를 이해하고 답변하세요.
+4. 답변은 구체적이고 명확하게 하되, 추측인 경우 그렇게 표시하세요."""
+        
+        user_prompt = f"{context}\n사용자 질문: {query}\n\n위 기사들을 분석하여 질문에 대해 구체적으로 답변해주세요. 특히 질문의 핵심에 집중하여 답변하세요."
         
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "당신은 뉴스 분석 전문가입니다. 제공된 뉴스 기사를 바탕으로 정확하고 통찰력 있는 답변을 제공하세요."},
-                {"role": "user", "content": f"{context}\n질문: {query}"}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
             ],
             temperature=0.7,
             max_tokens=800
@@ -294,6 +327,44 @@ else:
     with col3:
         latest_date = max(art['date'] for art in st.session_state.articles)
         st.metric("최신 기사", latest_date)
+    
+    # 예시 질문 표시
+    with st.expander("💬 예시 질문", expanded=False):
+        example_questions = {
+            "대출": [
+                "은행들이 전세대출에 대해 부정적인가요?",
+                "최근 대출 금리 동향은 어떤가요?",
+                "정부의 대출 규제 정책은 무엇인가요?"
+            ],
+            "경제": [
+                "최근 경제 성장률은 어떻게 되나요?",
+                "환율이 경제에 미치는 영향은?",
+                "물가 상승의 주요 원인은?"
+            ],
+            "부동산": [
+                "최근 아파트 가격 동향은?",
+                "전세 시장의 변화는 어떤가요?",
+                "부동산 정책의 효과는?"
+            ]
+        }
+        
+        # 현재 검색어와 관련된 예시 질문 표시
+        current_keyword = st.session_state.search_keyword.lower()
+        shown = False
+        
+        for category, questions in example_questions.items():
+            if category in current_keyword or current_keyword in category:
+                st.write(f"**{category} 관련 질문 예시:**")
+                for q in questions:
+                    st.write(f"• {q}")
+                shown = True
+                break
+        
+        if not shown:
+            st.write("**일반적인 질문 예시:**")
+            st.write("• 이 주제에 대한 최신 동향은 무엇인가요?")
+            st.write("• 전문가들의 의견은 어떤가요?")
+            st.write("• 향후 전망은 어떻게 되나요?")
 
 # 대화 표시
 for msg in st.session_state.messages:
@@ -309,6 +380,7 @@ if prompt := st.chat_input("수집된 뉴스에 대해 질문하세요"):
     with st.chat_message("assistant"):
         if not st.session_state.articles:
             response = "먼저 뉴스를 수집해주세요! 검색 키워드를 입력하거나 최신 이슈에서 키워드를 선택하세요."
+            relevant = []
         else:
             with st.spinner("분석 중..."):
                 relevant = filter_articles(prompt, st.session_state.articles)
@@ -316,16 +388,20 @@ if prompt := st.chat_input("수집된 뉴스에 대해 질문하세요"):
                 if relevant:
                     response = get_gpt_response(prompt, relevant)
                 else:
-                    response = f"'{prompt}'와 관련된 기사를 찾을 수 없습니다. 현재 '{st.session_state.search_keyword}' 관련 기사를 보유하고 있습니다."
+                    # 관련 기사가 없을 때도 전체 기사를 바탕으로 답변 시도
+                    response = get_gpt_response(prompt, st.session_state.articles[:5])
+                    relevant = st.session_state.articles[:5]
         
         st.write(response)
         
-        # 관련 기사 링크
-        if st.session_state.articles and relevant:
-            with st.expander("📎 참고 기사"):
-                for art in relevant[:3]:
-                    st.write(f"**[{art['title']}]({art['url']})**")
-                    st.caption(f"{art['date']} {art.get('time', '')} | {art.get('category', '일반')}")
+        # 관련 기사 링크 (항상 표시)
+        if relevant:
+            with st.expander("📎 참고한 기사", expanded=True):
+                for i, art in enumerate(relevant[:3]):
+                    st.write(f"**{i+1}. [{art['title']}]({art['url']})**")
+                    st.caption(f"📅 {art['date']} {art.get('time', '')} | {art['content'][:100]}...")
+                    if i < len(relevant) - 1:
+                        st.markdown("---")
     
     st.session_state.messages.append({"role": "assistant", "content": response})
 
@@ -337,4 +413,9 @@ st.sidebar.info("""
 - 따옴표("")로 정확한 구문 검색
 - 최신순: 최근 뉴스 우선
 - 정확도순: 검색어와 관련도 높은 순
+
+**🎯 질문 팁:**
+- 구체적인 질문이 더 정확한 답변을 받습니다
+- 예: "은행들이 전세대출을 거부하나요?"
+- 예: "최근 금리 인상 영향은?"
 """)
