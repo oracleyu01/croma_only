@@ -336,26 +336,60 @@ else:
         # 대화형 분석 모드
         st.markdown("## 💬 대화형 분석")
         
-        # 예시 질문
-        with st.expander("💡 예시 질문", expanded=False):
-            example_questions = [
-                "이 주제에 대한 최신 동향은?",
-                "전문가들의 의견은?",
-                "향후 전망은?",
-                "주요 이슈는 무엇인가요?"
-            ]
-            
-            cols = st.columns(len(example_questions))
-            for i, q in enumerate(example_questions):
-                with cols[i]:
-                    if st.button(f"{q}", key=f"example_{i}"):
-                        st.session_state.messages.append({"role": "user", "content": q})
-                        st.rerun()
+        # 예시 질문 버튼들
+        st.markdown("### 💡 빠른 질문하기")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("📈 이 주제의 최신 동향은?", use_container_width=True):
+                question = "이 주제에 대한 최신 동향은 무엇인가요?"
+                st.session_state.messages.append({"role": "user", "content": question})
+                with st.spinner("AI가 분석 중입니다..."):
+                    response = get_gpt_response(question, st.session_state.articles)
+                st.session_state.messages.append({"role": "assistant", "content": response})
+                st.rerun()
+                
+            if st.button("💭 전문가들의 의견은?", use_container_width=True):
+                question = "이 주제에 대한 전문가들의 의견은 어떤가요?"
+                st.session_state.messages.append({"role": "user", "content": question})
+                with st.spinner("AI가 분석 중입니다..."):
+                    response = get_gpt_response(question, st.session_state.articles)
+                st.session_state.messages.append({"role": "assistant", "content": response})
+                st.rerun()
+        
+        with col2:
+            if st.button("🔮 향후 전망은?", use_container_width=True):
+                question = "이 주제의 향후 전망은 어떻게 되나요?"
+                st.session_state.messages.append({"role": "user", "content": question})
+                with st.spinner("AI가 분석 중입니다..."):
+                    response = get_gpt_response(question, st.session_state.articles)
+                st.session_state.messages.append({"role": "assistant", "content": response})
+                st.rerun()
+                
+            if st.button("⚡ 주요 이슈는?", use_container_width=True):
+                question = "현재 가장 중요한 이슈는 무엇인가요?"
+                st.session_state.messages.append({"role": "user", "content": question})
+                with st.spinner("AI가 분석 중입니다..."):
+                    response = get_gpt_response(question, st.session_state.articles)
+                st.session_state.messages.append({"role": "assistant", "content": response})
+                st.rerun()
+        
+        st.markdown("---")
         
         # 대화 표시
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
+        if st.session_state.messages:
+            for msg in st.session_state.messages:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+                    
+                    # assistant 메시지일 때 관련 기사 표시
+                    if msg["role"] == "assistant" and st.session_state.articles:
+                        with st.expander("📎 참고 기사", expanded=False):
+                            for i, art in enumerate(st.session_state.articles[:3]):
+                                st.markdown(f"**{i+1}. [{art['title']}]({art['url']})**")
+                                st.caption(f"{art['date']} | {art.get('category', '일반')}")
+                                st.write(art['content'][:150] + "...")
+                                if i < 2:
+                                    st.markdown("---")
         
         # 사용자 입력
         if prompt := st.chat_input("뉴스에 대해 질문하세요"):
@@ -374,7 +408,8 @@ else:
                         st.markdown(f"**{i+1}. [{art['title']}]({art['url']})**")
                         st.caption(f"{art['date']} | {art.get('category', '일반')}")
                         st.write(art['content'][:150] + "...")
-                        st.markdown("---")
+                        if i < 2:
+                            st.markdown("---")
             
             st.session_state.messages.append({"role": "assistant", "content": response})
     
